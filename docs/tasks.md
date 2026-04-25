@@ -5,14 +5,18 @@
 
 ---
 
-## Phase 1 — Environment Setup
+## Phase 1 — Environment Setup ✓
 **Goal:** Clean Python environment with tree-sitter confirmed working.
 **Estimate:** 20 min
 
 - [x] **1.1** Create `pyproject.toml` with pinned dependencies (no falkordb, no codegraphcontext)
 - [x] **1.2** Create `.env.example` with GEMINI_PROJECT, GEMINI_LOCATION, BLAST_RADIUS_DB
-- [ ] **1.3** Confirm `tree-sitter-language-pack==0.6.0` + `tree-sitter>=0.21.0` install cleanly
-- [ ] **1.4** Run smoke test: parse a Python snippet with tree-sitter, print AST
+- [x] **1.3** Confirm `tree-sitter-language-pack==0.6.0` + `tree-sitter>=0.21.0` install cleanly
+- [x] **1.4** Smoke tests pass: function defs, calls, line numbers, source slices, class defs (10/10)
+
+> **API note (tree-sitter 0.25.x):** Use `QueryCursor(Query(lang, pattern)).captures(node)`
+> — returns `{capture_name: [nodes]}`. The old `lang.query().captures()` API is removed.
+> Documented in `tests/test_smoke.py`.
 
 ---
 

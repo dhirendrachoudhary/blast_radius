@@ -145,6 +145,7 @@ SELECT DISTINCT f.* FROM functions f JOIN blast_radius br ON br.uid = f.uid;
 | Issue | Fix |
 |---|---|
 | `tree-sitter-language-pack` v1.x breaks parser API | Pinned to `==0.6.0` in pyproject.toml — do not upgrade without testing |
+| tree-sitter 0.25.x changed query API | Use `QueryCursor(Query(lang, pattern)).captures(node)` → `{capture_name: [nodes]}`. Old `lang.query().captures()` is gone. See `tests/test_smoke.py` for working examples. |
 | Index stale when diff runs | Re-run `blast-radius index` before analyzing; staleness warning fires if graph mtime < repo mtime |
 | Unresolved calls after pass 2 | Expected for stdlib/third-party calls — logged but not a failure |
 | Gemini returns markdown fences | Strip before writing; validate with `ast.parse()` |
