@@ -4,14 +4,13 @@ version = "0.1.0"
 description = "AI-powered blast radius analyzer: git diff → code graph traversal → auto-generated tests"
 requires-python = ">=3.10"
 dependencies = [
-    "falkordb",
+    "tree-sitter>=0.21.0",
+    "tree-sitter-language-pack==0.6.0",
     "google-cloud-aiplatform",
     "python-dotenv",
     "pytest",
     "pytest-json-report",
     "typer",
-    "tree-sitter-language-pack==0.6.0",
-    "codegraphcontext",
 ]
 
 [project.optional-dependencies]

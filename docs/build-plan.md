@@ -1,53 +1,118 @@
 # Blast Radius Code Analyzer — Build Plan
-> Based on live inspection of CodeGraphContext v0.3.1 + FalkorDB schema.
-> Everything in this plan is grounded in what the database **actually stores**.
+> Self-contained. No CGC. No FalkorDB. No external services.
+> Stack: tree-sitter-language-pack + SQLite + Gemini (Vertex AI).
 
 ---
 
-## What We Learned from the Live Inspection
+## Architecture Decision Log
 
-Before writing a line of code, we ran `cgc index` on a real repo and queried FalkorDB directly. Key findings that reshape the original plan:
-
-| Original Assumption | Ground Truth |
+| Decision | Rationale |
 |---|---|
-| CGC outputs a static JSON file | CGC writes to a live FalkorDB (Unix socket) or KùzuDB instance |
-| You need a custom BFS engine in Python | Blast radius is a single Cypher `[:CALLS*1..10]` traversal |
-| Source code must be read from the filesystem | `source` is stored on every `Function` node — no filesystem reads needed |
-| `--db kuzu` flag exists | No such flag; database is configured via `cgc context` / `config.yaml` |
-| Line metadata may be unreliable | `line_number` + `end_line` on Function nodes; `line_number` on CALLS edges — clean and usable |
+| Drop `codegraphcontext` dependency | Avoid version-pinning cascade; own the parsing logic outright |
+| Drop `falkordb` dependency | Embedded SQLite replaces a daemon + Unix socket; zero ops overhead |
+| Use `tree-sitter-language-pack==0.6.0` directly | Same library CGC uses internally; v1.x installs as `_native` and breaks the API |
+| Pull parser logic from CGC source | `tree_sitter_manager.py` + `languages/python.py` are clean and isolated — adapted, not imported |
+| SQLite recursive CTE for graph traversal | Equivalent expressiveness to Cypher `[:CALLS*1..10]`; single file, no server |
 
-### Actual Graph Schema
+---
+
+## Graph Schema (SQLite)
+
+Two tables form the call graph:
+
+```sql
+CREATE TABLE functions (
+    uid         TEXT PRIMARY KEY,           -- "file_path::name::line_start"
+    name        TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    line_start  INTEGER NOT NULL,
+    line_end    INTEGER NOT NULL,
+    source      TEXT,
+    complexity  INTEGER DEFAULT 0,
+    decorators  TEXT,                       -- JSON list
+    docstring   TEXT,
+    repo_path   TEXT NOT NULL
+);
+
+CREATE TABLE calls (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller_uid  TEXT NOT NULL REFERENCES functions(uid),
+    callee_name TEXT NOT NULL,
+    callee_uid  TEXT REFERENCES functions(uid),  -- NULL until resolved in pass 2
+    line_number INTEGER
+);
+
+CREATE INDEX idx_fn_name        ON functions(name);
+CREATE INDEX idx_fn_file_lines  ON functions(file_path, line_start, line_end);
+CREATE INDEX idx_calls_caller   ON calls(caller_uid);
+CREATE INDEX idx_calls_callee   ON calls(callee_uid);
+```
+
+### Blast Radius Query (recursive CTE)
+
+```sql
+WITH RECURSIVE blast_radius(uid, depth) AS (
+    SELECT uid, 0 FROM functions WHERE name IN ($changed_names)
+    UNION ALL
+    SELECT c.caller_uid, br.depth + 1
+    FROM calls c
+    JOIN blast_radius br ON br.uid = c.callee_uid
+    WHERE br.depth < 10
+)
+SELECT DISTINCT f.* FROM functions f
+JOIN blast_radius br ON br.uid = f.uid;
+```
+
+Entry points (nothing calls them):
+```sql
+SELECT f.* FROM functions f
+WHERE f.uid IN (SELECT uid FROM blast_radius)
+  AND f.uid NOT IN (SELECT caller_uid FROM calls WHERE callee_uid IS NOT NULL);
+```
+
+SQLite handles cycles natively in recursive CTEs — no explicit visited-set needed.
+
+---
+
+## What We Pull from CGC Source
+
+These two files are adapted (not imported) from the [CGC repo](https://github.com/Unix-Dev-Ops/Code-Graph-Context):
+
+| CGC file | Our file | What we keep |
+|---|---|---|
+| `utils/tree_sitter_manager.py` | `src/blast_radius/parser/tree_sitter_manager.py` | Full file; strip CGC imports only |
+| `tools/languages/python.py` | `src/blast_radius/parser/python.py` | `PY_QUERIES` dict, `_find_functions()`, `_find_calls()`, `pre_scan_python()` — strip all DB/Neo4j code |
+| `tools/graph_builder.py` | `src/blast_radius/parser/__init__.py` | `TreeSitterParser` wrapper (10 lines) only |
+
+Everything else (FalkorDB worker, job system, MCP server, watcher) is not used.
+
+---
+
+## Project Structure
 
 ```
-Nodes:    Repository, File, Function, Class, Variable, Parameter, Module
-Edges:    CONTAINS, IMPORTS, HAS_PARAMETER, CALLS
-Key props on Function: name, source, line_number, end_line, cyclomatic_complexity, decorators, docstring
-Key props on CALLS:    line_number, full_call_name
-```
-
-### The Blast Radius Query (works today, zero custom code)
-
-```cypher
-MATCH p=(entry:Function)-[:CALLS*1..10]->(changed:Function {name: $fn_name})
-WHERE NOT ()-[:CALLS]->(entry)
-RETURN [n IN nodes(p) | n.name] AS call_chain
+src/blast_radius/
+├── parser/
+│   ├── __init__.py             # TreeSitterParser dispatcher (from graph_builder.py)
+│   ├── tree_sitter_manager.py  # language/parser loader (from CGC utils/)
+│   └── python.py               # PY_QUERIES + extraction logic (from CGC languages/)
+├── indexer.py                  # walks repo → parser → writes SQLite graph
+├── graph.py                    # SQLite client + recursive CTE queries
+├── git_diff.py                 # subprocess git diff → ChangedRange objects
+├── resolver.py                 # ChangedRange → FunctionNode via graph lookup
+├── synthesizer.py              # Gemini prompt builder + test code generator
+├── runner.py                   # write test file, execute pytest, capture results
+├── telemetry.py                # SQLite interaction logger (training data flywheel)
+└── __main__.py                 # CLI entrypoint (typer) — index + analyze commands
 ```
 
 ---
 
 ## Phase 1 — Environment Setup
-**Goal:** Working Python environment connected to CGC's live FalkorDB instance.
-**Time estimate: 30 min**
+**Goal:** Clean Python environment with tree-sitter confirmed working.
+**Time estimate: 20 min**
 
-### 1.1 Install dependencies
-
-```bash
-pip install codegraphcontext falkordb google-cloud-aiplatform python-dotenv pytest
-```
-
-> **Note:** Pin `tree-sitter-language-pack==0.6.0` — v1.x installs as `_native` module and breaks CGC's import.
-
-### 1.2 pyproject.toml
+### 1.1 pyproject.toml dependencies
 
 ```toml
 [project]
@@ -55,143 +120,181 @@ name = "blast-radius"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "falkordb",
+    "tree-sitter>=0.21.0",
+    "tree-sitter-language-pack==0.6.0",
     "google-cloud-aiplatform",
     "python-dotenv",
     "pytest",
-    "tree-sitter-language-pack==0.6.0",
-    "codegraphcontext",
+    "pytest-json-report",
+    "typer",
 ]
 ```
 
-### 1.3 .env
+### 1.2 .env
 
 ```env
-FALKORDB_SOCKET=/root/.codegraphcontext/global/db/falkordb.sock
 GEMINI_PROJECT=your-gcp-project
 GEMINI_LOCATION=us-central1
-CGC_GRAPH_NAME=codegraph
+BLAST_RADIUS_DB=data/blast_radius.db
 ```
 
-### 1.4 Index your target repo
-
-```bash
-cgc index /path/to/your/repo
-```
-
-Verify it worked:
-```bash
-cgc analyze callers <any_function_name>
-```
-
-### 1.5 Confirm FalkorDB socket exists
+### 1.3 Smoke test — confirm tree-sitter parses Python
 
 ```python
-import falkordb, os
-client = falkordb.FalkorDB(unix_socket_path=os.getenv("FALKORDB_SOCKET"))
-g = client.select_graph("codegraph")
-print(g.query("MATCH (f:Function) RETURN count(f)").result_set)
+from tree_sitter_language_pack import get_language, get_parser
+parser = get_parser("python")
+tree = parser.parse(b"def hello(): pass")
+print(tree.root_node.sexp())  # should print the AST
 ```
 
 ---
 
-## Phase 2 — Graph Client (`graph.py`)
-**Goal:** A clean Python wrapper over FalkorDB with all blast-radius queries.
-**Time estimate: 1.5 hours**
+## Phase 2 — Parser (adapted from CGC)
+**Goal:** tree-sitter → structured `ParsedFile` with functions and call edges.
+**Time estimate: 2 hours**
 
-This replaces the entire custom BFS engine from the original plan. All traversal happens in Cypher.
+### 2.1 `tree_sitter_manager.py` (adapt from CGC)
 
-### 2.1 Connection
+Provides thread-safe language loading and `execute_query()` backward-compat shim.
+Strip only the CGC-specific import paths. Everything else is kept as-is.
+
+### 2.2 `PY_QUERIES` (adapt from CGC `languages/python.py`)
+
+The query dictionary covers:
+- `functions` — `function_definition` nodes: name, params, decorators, body
+- `calls` — `call` nodes: identifier and attribute calls
+- `imports` — `import_statement` and `import_from_statement`
+- `lambdas` — lambda assignments that act as named functions
+
+### 2.3 `_find_functions(tree, source_bytes, file_path)` → `list[FunctionNode]`
+
+Extracts per function:
+- `name`, `file_path`, `line_start`, `line_end`
+- `source` — slice of `source_bytes` by line range
+- `complexity` — count of `if/for/while/try` nodes in function body
+- `decorators` — list of decorator name strings
+- `docstring` — first string expression in body if present
+- `uid` — `f"{file_path}::{name}::{line_start}"`
+
+### 2.4 `_find_calls(tree, source_bytes, functions)` → `list[CallEdge]`
+
+Per call node:
+- `caller_uid` — which function contains this call (by line range lookup)
+- `callee_name` — the called function's name (unresolved at this stage)
+- `line_number` — line of the call expression
+
+### 2.5 `ParsedFile` dataclass
 
 ```python
-# src/blast_radius/graph.py
-import falkordb, os
-from dataclasses import dataclass
+@dataclass
+class ParsedFile:
+    path: str
+    functions: list[FunctionNode]
+    calls: list[CallEdge]
+```
 
+---
+
+## Phase 3 — Indexer (`indexer.py`)
+**Goal:** Walk a repo, parse every `.py` file, write the call graph to SQLite.
+**Time estimate: 1.5 hours**
+
+### 3.1 Two-pass strategy
+
+**Pass 1 — parse all files:**
+```python
+for py_file in repo_path.rglob("*.py"):
+    parsed = parser.parse(py_file)
+    db.insert_functions(parsed.functions)
+    db.insert_calls_unresolved(parsed.calls)   # callee_uid = NULL
+```
+
+**Pass 2 — resolve callee names to UIDs:**
+```python
+for call in db.get_unresolved_calls():
+    uid = db.find_function_uid_by_name(call.callee_name)
+    if uid:
+        db.resolve_call(call.id, uid)
+```
+
+Two passes are required because a function may be called before it is defined (across files).
+
+### 3.2 What to skip
+
+```python
+SKIP_DIRS = {".venv", "venv", "__pycache__", ".git", "node_modules", "dist", "build"}
+```
+
+### 3.3 CLI command
+
+```bash
+python -m blast_radius index /path/to/repo
+# Writes to $BLAST_RADIUS_DB (default: data/blast_radius.db)
+```
+
+---
+
+## Phase 4 — Graph Client (`graph.py`)
+**Goal:** SQLite wrapper with all blast-radius queries.
+**Time estimate: 1 hour**
+
+Replaces FalkorDB entirely. All queries are plain SQLite — no Cypher.
+
+### 4.1 `FunctionNode` and `BlastRadiusResult` dataclasses
+
+```python
 @dataclass
 class FunctionNode:
+    uid: str
     name: str
-    source: str
     file_path: str
     line_start: int
     line_end: int
+    source: str
     complexity: int
 
-class CodeGraph:
-    def __init__(self):
-        self.client = falkordb.FalkorDB(
-            unix_socket_path=os.getenv("FALKORDB_SOCKET")
-        )
-        self.g = self.client.select_graph(os.getenv("CGC_GRAPH_NAME", "codegraph"))
-```
-
-### 2.2 Core queries to implement
-
-**a) Find function by name**
-```cypher
-MATCH (f:Function {name: $name})
-RETURN f.name, f.source, f.line_number, f.end_line
-```
-
-**b) Find function by file + line range** ← used by git diff resolver
-```cypher
-MATCH (file:File)-[:CONTAINS]->(f:Function)
-WHERE file.path = $file_path
-  AND f.line_number <= $changed_line
-  AND f.end_line   >= $changed_line
-RETURN f.name, f.source, f.line_number, f.end_line
-```
-
-**c) Blast radius — full upstream subgraph**
-```cypher
-MATCH p=(entry:Function)-[:CALLS*1..10]->(changed:Function {name: $fn_name})
-RETURN 
-  [n IN nodes(p) | n.name]       AS call_chain,
-  [n IN nodes(p) | n.source]     AS sources,
-  [n IN nodes(p) | n.line_number] AS lines
-```
-
-**d) Entry points only** (API routes / top-level functions with no callers)
-```cypher
-MATCH (entry:Function)-[:CALLS*1..10]->(changed:Function {name: $fn_name})
-WHERE NOT ()-[:CALLS]->(entry)
-RETURN DISTINCT entry.name, entry.source
-```
-
-**e) Deduplicated affected node set**
-```cypher
-MATCH (affected:Function)-[:CALLS*1..10]->(changed:Function {name: $fn_name})
-RETURN DISTINCT affected.name, affected.source, affected.line_number, affected.end_line
-ORDER BY affected.line_number
-```
-
-### 2.3 What to return from `get_blast_radius(fn_names: list[str])`
-
-```python
 @dataclass
 class BlastRadiusResult:
-    ground_zero: list[FunctionNode]       # the changed functions
-    affected_functions: list[FunctionNode] # deduplicated upstream set
-    entry_points: list[FunctionNode]       # API routes / top-level callers
-    call_chains: list[list[str]]           # human-readable paths
+    ground_zero: list[FunctionNode]
+    affected_functions: list[FunctionNode]
+    entry_points: list[FunctionNode]
+    call_chains: list[list[str]]
 ```
 
-> **Cycle guard:** FalkorDB's Cypher handles cycles in variable-length paths natively — it won't loop. No explicit visited-set needed.
+### 4.2 Core methods
+
+| Method | Query strategy |
+|---|---|
+| `find_by_name(name)` | `SELECT * FROM functions WHERE name = ?` |
+| `find_by_line(file_path, line)` | `WHERE file_path=? AND line_start<=? AND line_end>=?` |
+| `get_blast_radius(fn_names)` | Recursive CTE walking `calls` backwards |
+| `get_entry_points(uids)` | Filter blast radius set: no callers in `calls.callee_uid` |
+| `get_call_chains(fn_names)` | Recursive CTE with path accumulation |
+
+### 4.3 Call chain accumulation (SQLite)
+
+```sql
+WITH RECURSIVE chains(uid, name, path_str, depth) AS (
+    SELECT uid, name, name, 0 FROM functions WHERE name IN ($changed)
+    UNION ALL
+    SELECT f.uid, f.name, c2.name || ' → ' || ch.path_str, ch.depth + 1
+    FROM functions f
+    JOIN calls c2 ON c2.caller_uid = f.uid
+    JOIN chains ch ON ch.uid = c2.callee_uid
+    WHERE ch.depth < 10
+)
+SELECT path_str FROM chains WHERE depth > 0;
+```
 
 ---
 
-## Phase 3 — Git Diff Resolver (`git_diff.py` + `resolver.py`)
+## Phase 5 — Git Diff Resolver (`git_diff.py` + `resolver.py`)
 **Goal:** Map `git diff` output to `FunctionNode` objects via the graph.
-**Time estimate: 2 hours**
+**Time estimate: 1.5 hours**
 
-This is the most fragile phase. Budget time for edge cases.
-
-### 3.1 Parse the diff (`git_diff.py`)
+### 5.1 Parse the diff (`git_diff.py`)
 
 ```python
-import subprocess, re
-from dataclasses import dataclass
-
 @dataclass
 class ChangedRange:
     file_path: str      # absolute path
@@ -205,52 +308,36 @@ def get_changed_ranges(repo_path: str) -> list[ChangedRange]:
     return _parse_unified_diff(result.stdout, repo_path)
 ```
 
-Parse the `@@ -a,b +c,d @@` hunk headers to extract every modified line number in the **new** file. Expand ranges: a hunk `+10,5` means lines 10, 11, 12, 13, 14 all changed.
+Parse `@@ -a,b +c,d @@` hunk headers — expand ranges to individual line numbers.
 
-**Edge cases to handle explicitly:**
-- New files (no `-` side in the hunk) — treat all lines as changed
-- Deleted functions — the node may still exist in the graph from the last index; re-run `cgc index` before diffing
-- Renamed files — `git diff --find-renames` and update file path matching accordingly
+**Edge cases:**
+- New files (no `-` side) — treat all lines as changed
+- Renamed files — use `git diff --find-renames`
 
-### 3.2 Resolve lines to nodes (`resolver.py`)
+### 5.2 Resolve lines to nodes (`resolver.py`)
 
 ```python
-def resolve_to_functions(changed_ranges: list[ChangedRange], graph: CodeGraph) -> list[FunctionNode]:
+def resolve_to_functions(changed_ranges, graph) -> list[FunctionNode]:
     found = []
     for change in changed_ranges:
-        for line in set(change.lines):   # deduplicate lines before querying
-            node = graph.find_function_by_line(change.file_path, line)
+        for line in set(change.lines):
+            node = graph.find_by_line(change.file_path, line)
             if node and node not in found:
                 found.append(node)
     return found
 ```
 
-> **Fuzzy fallback:** If exact line intersection returns nothing (e.g. the function signature was on a different line than the body), widen the search to ±3 lines. Log when fuzzy matching fires — it's a signal the index is stale and `cgc index` should be re-run.
-
-### 3.3 Full pipeline
-
-```
-git diff --unified=0 HEAD
-    │
-    ▼
-ChangedRange(file, [line_nums])
-    │
-    ▼  graph lookup: line_number <= L <= end_line
-FunctionNode (ground zero)
-    │
-    ▼  Cypher: [:CALLS*1..10] upstream traversal
-BlastRadiusResult
-```
+**Fuzzy fallback:** if exact line intersection misses, widen to ±3 lines. Log when this fires — it means the index is stale and `blast-radius index` should be re-run.
 
 ---
 
-## Phase 4 — Agentic Test Synthesizer (`synthesizer.py` + `runner.py`)
-**Goal:** Send the blast radius subgraph to Gemini, get runnable pytest code back, execute it.
-**Time estimate: 2.5 hours**
+## Phase 6 — Agentic Test Synthesizer (`synthesizer.py` + `runner.py`)
+**Goal:** Blast radius subgraph → Gemini → runnable pytest → executed.
+**Time estimate: 2 hours**
 
-### 4.1 Context assembly
+### 6.1 Context assembly (`synthesizer.py`)
 
-Because `source` is stored on every `Function` node, context assembly requires **zero filesystem reads**:
+`source` is stored on every `FunctionNode` — no filesystem reads:
 
 ```python
 def build_context(result: BlastRadiusResult) -> str:
@@ -276,81 +363,54 @@ def build_context(result: BlastRadiusResult) -> str:
     return "\n\n".join(parts)
 ```
 
-### 4.2 Prompt architecture
+Cap `affected_functions` to top 20 by `complexity` before building context — prevents Gemini context overflow on large repos.
+
+### 6.2 Prompt
 
 ```python
 SYSTEM_PROMPT = """
-You are a senior Python test engineer. You will receive:
-1. A set of functions that were recently modified (Ground Zero)
+You are a senior Python test engineer. You receive:
+1. Functions recently modified (Ground Zero)
 2. All upstream functions impacted by those changes (Blast Radius)
 3. The API entry points that surface those changes to callers
-4. The exact call chains connecting them
+4. Call chains connecting them
 
-Your task: write pytest functions targeting the ENTRY POINTS to verify
-their contracts still hold after the changes. 
-
+Write pytest functions targeting the ENTRY POINTS.
 Rules:
-- Use pytest only. No unittest.
-- Mock all external I/O (database calls, HTTP, filesystem).
-- One test function per distinct behavior / edge case.
-- Include a test for the happy path AND at least one failure case per entry point.
-- If you see existing fixtures or conftest patterns in the source, replicate them.
-- Output ONLY valid Python code. No markdown fences, no explanation.
-"""
-
-USER_TEMPLATE = """
-{context}
-
-Generate pytest functions for the entry points listed above.
+- pytest only. No unittest.
+- Mock all external I/O (database, HTTP, filesystem).
+- One function per behavior/edge case.
+- Happy path + at least one failure case per entry point.
+- Output ONLY valid Python. No markdown fences, no explanation.
 """
 ```
 
-### 4.3 Gemini integration
+### 6.3 Gemini integration
 
 ```python
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
 def synthesize_tests(context: str) -> str:
-    vertexai.init(
-        project=os.getenv("GEMINI_PROJECT"),
-        location=os.getenv("GEMINI_LOCATION")
-    )
+    vertexai.init(project=os.getenv("GEMINI_PROJECT"), location=os.getenv("GEMINI_LOCATION"))
     model = GenerativeModel("gemini-2.0-flash-001")
-    response = model.generate_content([SYSTEM_PROMPT, USER_TEMPLATE.format(context=context)])
+    response = model.generate_content([SYSTEM_PROMPT, context])
     return response.text.strip()
 ```
 
-### 4.4 Test runner (`runner.py`)
+### 6.4 Test runner (`runner.py`)
 
-```python
-import subprocess, tempfile, pathlib
-
-def write_and_run(test_code: str, repo_path: str) -> dict:
-    test_file = pathlib.Path(repo_path) / "tests" / "test_blast_radius.py"
-    test_file.parent.mkdir(exist_ok=True)
-    test_file.write_text(test_code)
-
-    result = subprocess.run(
-        ["pytest", str(test_file), "-v", "--tb=short", "--json-report"],
-        cwd=repo_path, capture_output=True, text=True
-    )
-    return {
-        "returncode": result.returncode,
-        "stdout": result.stdout,
-        "passed": result.stdout.count(" PASSED"),
-        "failed": result.stdout.count(" FAILED"),
-        "test_file": str(test_file),
-    }
-```
+1. Strip markdown fences from Gemini output
+2. Validate with `ast.parse()` before writing to disk
+3. Write to `tests/test_blast_radius.py` in the target repo
+4. Run `pytest -v --tb=short --json-report`
+5. Parse and return `{passed, failed, returncode, stdout}`
 
 ---
 
-## Phase 5 — Interaction Data Loop (`telemetry.py`)
-**Goal:** Every run writes a training record. This is the moat.
-**Time estimate: 1 hour**
-
-### 5.1 SQLite schema
+## Phase 7 — Interaction Data Loop (`telemetry.py`)
+**Goal:** Every run writes a training record.
+**Time estimate: 45 min**
 
 ```sql
 CREATE TABLE interactions (
@@ -358,116 +418,69 @@ CREATE TABLE interactions (
     timestamp   TEXT    NOT NULL,
     repo_path   TEXT    NOT NULL,
     ground_zero TEXT    NOT NULL,   -- JSON: list of changed function names
-    prompt      TEXT    NOT NULL,   -- the full context string sent to Gemini
-    generated   TEXT    NOT NULL,   -- raw Gemini output
-    passed      INTEGER,            -- pytest pass count
-    failed      INTEGER,            -- pytest fail count
-    edited      INTEGER DEFAULT 0,  -- 1 if developer manually edited the output
-    final_code  TEXT                -- post-edit code if developer modified it
+    prompt      TEXT    NOT NULL,
+    generated   TEXT    NOT NULL,
+    passed      INTEGER,
+    failed      INTEGER,
+    edited      INTEGER DEFAULT 0,
+    final_code  TEXT
 );
 ```
 
-### 5.2 Logger
-
-```python
-import sqlite3, json
-from datetime import datetime
-
-class TelemetryLogger:
-    def __init__(self, db_path: str = "data/interactions.db"):
-        self.conn = sqlite3.connect(db_path)
-        self._init_schema()
-
-    def log(self, repo_path, ground_zero, prompt, generated, run_result):
-        self.conn.execute("""
-            INSERT INTO interactions
-            (timestamp, repo_path, ground_zero, prompt, generated, passed, failed)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.utcnow().isoformat(),
-            repo_path,
-            json.dumps([f.name for f in ground_zero]),
-            prompt,
-            generated,
-            run_result["passed"],
-            run_result["failed"],
-        ))
-        self.conn.commit()
-
-    def mark_edited(self, interaction_id: int, final_code: str):
-        self.conn.execute(
-            "UPDATE interactions SET edited=1, final_code=? WHERE id=?",
-            (final_code, interaction_id)
-        )
-        self.conn.commit()
-```
-
-### 5.3 What this data becomes
-
 Each row is a complete supervised fine-tuning example:
-- **Input:** `prompt` (the subgraph context)
+- **Input:** `prompt`
 - **Output:** `final_code` if `edited=1`, else `generated`
-- **Quality signal:** `passed / (passed + failed)` ratio
-
-After ~500 runs on a real codebase, this dataset is sufficient to fine-tune a smaller model (e.g. Gemini Flash or a local Qwen/Llama variant) that understands the repo's specific patterns — fixture conventions, mock styles, domain objects.
+- **Quality signal:** `passed / (passed + failed)`
 
 ---
 
-## Phase 6 — CLI Entrypoint
-**Goal:** One command to run the whole pipeline.
+## Phase 8 — CLI Entrypoint (`__main__.py`)
+**Goal:** Two commands wire the full tool.
 **Time estimate: 30 min**
 
-```python
-# src/blast_radius/__main__.py
-import typer
-from .git_diff import get_changed_ranges
-from .graph import CodeGraph
-from .resolver import resolve_to_functions
-from .synthesizer import build_context, synthesize_tests
-from .runner import write_and_run
-from .telemetry import TelemetryLogger
+```bash
+# Build / rebuild the SQLite call graph for a repo
+python -m blast_radius index /path/to/repo
 
+# Run the full pipeline on uncommitted changes
+python -m blast_radius analyze /path/to/repo
+python -m blast_radius analyze /path/to/repo --dry-run
+```
+
+```python
 app = typer.Typer()
 
 @app.command()
+def index(repo: str):
+    """Parse repo and build the SQLite call graph."""
+    ...
+
+@app.command()
 def analyze(
-    repo: str = typer.Argument(..., help="Path to the git repo"),
-    dry_run: bool = typer.Option(False, help="Print blast radius without running tests"),
+    repo: str,
+    dry_run: bool = typer.Option(False),
 ):
-    graph = CodeGraph()
-    logger = TelemetryLogger()
-
-    changed = get_changed_ranges(repo)
-    typer.echo(f"Found {len(changed)} changed file(s)")
-
-    ground_zero = resolve_to_functions(changed, graph)
-    typer.echo(f"Ground zero: {[f.name for f in ground_zero]}")
-
-    result = graph.get_blast_radius([f.name for f in ground_zero])
-    typer.echo(f"Blast radius: {len(result.affected_functions)} function(s) affected")
-    for chain in result.call_chains:
-        typer.echo(f"  {' → '.join(chain)}")
-
-    if dry_run:
-        return
-
-    context = build_context(result)
-    test_code = synthesize_tests(context)
-
-    run_result = write_and_run(test_code, repo)
-    typer.echo(f"Tests: {run_result['passed']} passed, {run_result['failed']} failed")
-
-    logger.log(repo, ground_zero, context, test_code, run_result)
-
-if __name__ == "__main__":
-    app()
+    """git diff → blast radius → synthesize tests → run tests."""
+    ...
 ```
 
-Run it:
-```bash
-python -m blast_radius /path/to/your/repo
-python -m blast_radius /path/to/your/repo --dry-run
-```
+---
+
+## Build Order
+
+1. `pyproject.toml` + venv + smoke test
+2. `parser/tree_sitter_manager.py` — adapt from CGC
+3. `parser/python.py` — adapt PY_QUERIES + extraction logic from CGC
+4. `parser/__init__.py` — TreeSitterParser dispatcher
+5. `indexer.py` — two-pass repo walker + SQLite writer
+6. `graph.py` — SQLite client + recursive CTE queries
+7. `git_diff.py` — diff parser
+8. `resolver.py` — line→FunctionNode lookup + fuzzy fallback
+9. `synthesizer.py` — context builder + Gemini call
+10. `runner.py` — write test file + pytest execution
+11. `telemetry.py` — SQLite interaction logger
+12. `__main__.py` — wire `index` and `analyze` commands
+13. End-to-end: index a real repo → make a change → run analyze → inspect `data/`
 
 ---
 
@@ -475,19 +488,19 @@ python -m blast_radius /path/to/your/repo --dry-run
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| CGC index is stale when diff runs | High | Always re-run `cgc index` at pipeline start, or use `cgc watch` |
-| Gemini generates non-runnable tests | Medium | Strip markdown fences before writing; validate with `ast.parse()` before pytest |
-| FalkorDB socket not running | Medium | Add a health check on startup; surface a clear error message |
-| `tree-sitter-language-pack` version conflict | High (already hit this) | Pin to `==0.6.0` in pyproject.toml |
-| Cyclic call graphs causing infinite traversal | Low | FalkorDB Cypher handles this natively with variable-length path deduplication |
-| Gemini context window overflow on large repos | Medium | Cap `affected_functions` to top 20 by cyclomatic complexity before building prompt |
+| `tree-sitter-language-pack` v1.x breaks parser API | High (already hit) | Pin to `==0.6.0` |
+| Call resolution misses cross-module calls | Medium | Pass 2 resolves by name; log unresolved calls — they indicate the index missed a file |
+| Index is stale when diff runs | High | Re-run `blast-radius index` before analyzing; add staleness warning if graph mtime < repo mtime |
+| Gemini returns markdown fences | Medium | Strip fences; validate with `ast.parse()` before writing |
+| Large repos overflow Gemini context | Medium | Cap affected_functions to top 20 by cyclomatic_complexity |
+| Fuzzy line matching gives wrong function | Low | Log uid + line range every time fuzzy fires; easy to audit in output |
 
 ---
 
 ## Future Extensions (Post-MVP)
 
-- **VS Code extension:** Show blast radius inline as a hover/diagnostic when a file is saved
-- **PR comment bot:** Run on CI, post the affected subgraph + generated tests as a PR comment
-- **Fine-tuned model:** After 500+ interactions, distill the dataset into a smaller local model
-- **Multi-repo graphs:** CGC supports multiple indexed repos; extend resolver to cross-repo CALLS edges
-- **KùzuDB support:** CGC also supports KùzuDB — the Cypher queries are compatible; swap the connection string in `.env`
+- Multi-language support: JS/TS/Go parsers already in CGC's `languages/` — same adaptation pattern
+- VS Code extension: show blast radius inline on save
+- PR comment bot: post affected subgraph + tests as CI comment
+- Fine-tuned model: distill `interactions.db` after 500+ runs
+- KùzuDB backend: swap SQLite connection; recursive CTE logic is portable
