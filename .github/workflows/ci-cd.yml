@@ -2,9 +2,9 @@ name: CI/CD
 
 on:
   push:
-    branches: [main, release, feature/*]
+    branches: [main, "release/v*", "feature/*"]
   pull_request:
-    branches: [release, main]
+    branches: ["release/v*", main]
 
 jobs:
   test:
@@ -39,7 +39,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v')
 
     steps:
       - uses: actions/checkout@v4

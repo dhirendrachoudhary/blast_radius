@@ -47,39 +47,47 @@ python -m blast_radius analyze /path/to/target/repo --dry-run
 
 | Branch | Purpose | Merge Policy |
 |--------|---------|--------------|
-| `main` | Production-ready releases (tagged versions) | Merge from `release/` when ready for PyPI |
-| `release` | Integration branch for next release | Merge from `feature/*` when feature complete |
-| `feature/*` | Feature development (one per task/phase) | Create from `release`, merge back when done |
+| `main` | Production-ready releases (tagged versions) | Merge from `release/v*` when ready for PyPI |
+| `release/v0.X.X` | Versioned release branch (one per release) | Merge from `feature/*` when feature complete |
+| `feature/*` | Feature development (descriptive names only) | Create from `release/v*`, merge back when done |
 
 **Workflow:**
 ```bash
-# Start a new feature
-git checkout release
-git pull origin release
-git checkout -b feature/phase-5-resolver
+# Start a new feature (from current release branch)
+git checkout release/v0.2.0
+git pull origin release/v0.2.0
+git checkout -b feature/graph-resolver
 
 # Develop and commit (all tests must pass)
 git add ...
-git commit -m "feat: implement resolver module"
+git commit -m "feat: implement graph resolver for changed functions"
 
-# When feature complete: create PR, merge to release
-git push origin feature/phase-5-resolver
-# (GitHub: Create PR feature/phase-5-resolver → release)
-# (After review: Merge to release)
+# When feature complete: create PR, merge to release branch
+git push origin feature/graph-resolver
+# (GitHub: Create PR feature/graph-resolver → release/v0.2.0)
+# (After review: Merge to release/v0.2.0)
 
-# When release ready: merge to main and tag
+# When ready for new release: create release/v0.3.0 from main
 git checkout main
 git pull origin main
-git merge release
-git tag -a v0.2.0 -m "Release v0.2.0"
+git checkout -b release/v0.3.0
+git push -u origin release/v0.3.0
+
+# When release branch complete: merge to main and tag
+git checkout main
+git pull origin main
+git merge release/v0.3.0
+git tag -a v0.3.0 -m "Release v0.3.0"
 git push origin main --tags
 ```
 
 **Rules:**
-- Only tested, reviewed code merges to `release`
+- Feature branch names: `feature/descriptive-name` (no phase numbers)
+- Release branch names: `release/v0.X.X` (semantic versioning)
+- Only tested, reviewed code merges to release branches
 - Only release-quality code merges to `main`
+- All releases are tagged with semantic version (v0.X.X)
 - All pushes trigger CI/CD (tests must pass)
-- All releases are tagged (semantic versioning)
 
 ## Building as PyPI Package
 
