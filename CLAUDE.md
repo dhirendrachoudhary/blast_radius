@@ -48,45 +48,45 @@ python -m blast_radius analyze /path/to/target/repo --dry-run
 | Branch | Purpose | Merge Policy |
 |--------|---------|--------------|
 | `main` | Production-ready releases (tagged versions) | Merge from `release/v*` when ready for PyPI |
-| `release/v0.X.X` | Versioned release branch (one per release) | Merge from `feature/*` when feature complete |
+| `release/v1.X.X` | Versioned release branch (one per release) | Merge from `feature/*` when feature complete |
 | `feature/*` | Feature development (descriptive names only) | Create from `release/v*`, merge back when done |
 
 **Workflow:**
 ```bash
 # Start a new feature (from current release branch)
-git checkout release/v0.2.0
-git pull origin release/v0.2.0
-git checkout -b feature/graph-resolver
+git checkout release/v1.0.0
+git pull origin release/v1.0.0
+git checkout -b feature/git-diff-parser
 
 # Develop and commit (all tests must pass)
 git add ...
-git commit -m "feat: implement graph resolver for changed functions"
+git commit -m "feat: implement git diff parser for changed functions"
 
 # When feature complete: create PR, merge to release branch
-git push origin feature/graph-resolver
-# (GitHub: Create PR feature/graph-resolver → release/v0.2.0)
-# (After review: Merge to release/v0.2.0)
+git push origin feature/git-diff-parser
+# (GitHub: Create PR feature/git-diff-parser → release/v1.0.0)
+# (After review: Merge to release/v1.0.0)
 
-# When ready for new release: create release/v0.3.0 from main
+# When ready for next release: create release/v1.1.0 from main
 git checkout main
 git pull origin main
-git checkout -b release/v0.3.0
-git push -u origin release/v0.3.0
+git checkout -b release/v1.1.0
+git push -u origin release/v1.1.0
 
 # When release branch complete: merge to main and tag
 git checkout main
 git pull origin main
-git merge release/v0.3.0
-git tag -a v0.3.0 -m "Release v0.3.0"
+git merge release/v1.1.0
+git tag -a v1.1.0 -m "Release v1.1.0"
 git push origin main --tags
 ```
 
 **Rules:**
 - Feature branch names: `feature/descriptive-name` (no phase numbers)
-- Release branch names: `release/v0.X.X` (semantic versioning)
+- Release branch names: `release/v1.X.X` (semantic versioning)
 - Only tested, reviewed code merges to release branches
 - Only release-quality code merges to `main`
-- All releases are tagged with semantic version (v0.X.X)
+- All releases are tagged with semantic version (v1.X.X)
 - All pushes trigger CI/CD (tests must pass)
 
 ## Building as PyPI Package
@@ -108,7 +108,7 @@ twine upload dist/*
 
 **Current PyPI metadata in `pyproject.toml`:**
 - Package name: `blast-radius`
-- Version: `0.1.0` (increment for each release)
+- Version: `1.0.0` (first stable release - Phases 1-4 complete)
 - Entry point: `blast-radius` CLI command
 - Python requirement: `>=3.10`
 
