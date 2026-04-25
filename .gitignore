@@ -23,3 +23,7 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Local — Claude workspace and documentation
+.claude/
+docs/
