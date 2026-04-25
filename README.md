@@ -4,7 +4,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green)](#license)
-[![Phase](https://img.shields.io/badge/Phase-2%2F9%20Complete-orange)](#development-roadmap)
+[![Phase](https://img.shields.io/badge/Phase-2%2F9%20Complete-orange)](#overview)
 
 ---
 
@@ -292,26 +292,6 @@ cp .env.example .env
 
 ---
 
-## Development Roadmap
-
-| Phase | Task | Status |
-|-------|------|--------|
-| 1 | Environment setup + tree-sitter validation | ✅ Complete |
-| 2 | Parser wrapper (tree-sitter → dataclasses) | ✅ Complete |
-| 3 | Two-pass indexer (repo → SQLite) | ⏳ In Progress |
-| 4 | Graph client (SQLite recursive CTE) | ⏳ Planned |
-| 5 | Git diff resolver | ⏳ Planned |
-| 6 | Test synthesizer + runner (Gemini) | ⏳ Planned |
-| 7 | Telemetry loop (training data) | ⏳ Planned |
-| 8 | CLI entrypoint (typer) | ⏳ Planned |
-| 9 | End-to-end validation | ⏳ Planned |
-| — | Multi-language support (JS/TS/Go) | 📋 Future |
-| — | VS Code extension | 📋 Future |
-| — | PR comment bot | 📋 Future |
-| — | Model distillation | 📋 Future |
-
----
-
 ## Testing
 
 Run the test suite:
@@ -443,23 +423,6 @@ Parser logic adapted from [CodeGraphContext](https://github.com/Unix-Dev-Ops/Cod
 - **Report bugs** — Open an issue on GitHub
 - **Ask questions** — Start a discussion
 - **Suggest features** — Open a feature request
-
----
-
-## Roadmap
-
-### Short Term (Next 3 Months)
-
-- [ ] Complete Phase 3-9 implementation
-- [ ] End-to-end validation on public repos
-- [ ] Performance optimization for large codebases
-
-### Long Term (6-12 Months)
-
-- [ ] Multi-language support (JavaScript, Go, TypeScript)
-- [ ] VS Code extension for inline blast-radius display
-- [ ] GitHub Actions bot for PR comments
-- [ ] Fine-tuned models optimized for specific codebases
 
 ---
 
