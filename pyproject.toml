@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "AI-powered blast radius analyzer: git diff → code graph traversal → auto-generated tests"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Dhirendra Choudhary", email = "dhirendrachoudhary@gmail.com"}
 ]
@@ -13,7 +13,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
