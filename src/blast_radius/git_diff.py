@@ -76,8 +76,10 @@ class GitDiffParser:
                 match = re.search(r"b/(.+)$", line)
                 if match:
                     file_path = match.group(1)
-                    # Make path absolute relative to repo
-                    current_file = str((self.repo_path / file_path).resolve())
+                    # Convert to absolute path to match database format
+                    # (database paths depend on how indexer was invoked)
+                    abs_path = str((self.repo_path / file_path).resolve())
+                    current_file = abs_path
                     if current_file not in changed_files:
                         changed_files[current_file] = []
 
