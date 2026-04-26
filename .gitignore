@@ -10,8 +10,12 @@ build/
 # Environment
 .env
 
-# Data — SQLite training DB is local-only
+# Data — SQLite databases are local-only
 data/interactions.db
+data/blast_radius.db
+
+# Claude workspace
+CLAUDE.md
 
 # Pytest
 .pytest_cache/

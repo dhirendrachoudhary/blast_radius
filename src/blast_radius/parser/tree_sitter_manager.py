@@ -182,7 +182,7 @@ class TreeSitterManager:
         try:
             self.get_language_safe(lang)
             return True
-        except (ValueError, Exception):
+        except Exception:
             return False
 
     def get_supported_languages(self) -> list[str]:

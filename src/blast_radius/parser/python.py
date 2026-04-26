@@ -241,37 +241,6 @@ class PythonTreeSitterParser:
             line_end = func_node.end_point[0] + 1
             source = self._get_source_slice(source_code, line_start, line_end)
 
-            # Extract parameters
-            params_node = func_node.child_by_field_name("parameters")
-            args = []
-            if params_node:
-                for p in params_node.children:
-                    arg_text = None
-                    if p.type == "identifier":
-                        # Simple parameter: def foo(x)
-                        arg_text = self._get_node_text(p)
-                    elif p.type == "default_parameter":
-                        # Parameter with default: def foo(x=5)
-                        name_node_param = p.child_by_field_name("name")
-                        if name_node_param:
-                            arg_text = self._get_node_text(name_node_param)
-                    elif p.type == "typed_parameter":
-                        # Typed parameter: def foo(x: int)
-                        name_node_param = p.child_by_field_name("name")
-                        if name_node_param:
-                            arg_text = self._get_node_text(name_node_param)
-                    elif p.type == "typed_default_parameter":
-                        # Typed parameter with default: def foo(x: int = 5)
-                        name_node_param = p.child_by_field_name("name")
-                        if name_node_param:
-                            arg_text = self._get_node_text(name_node_param)
-                    elif p.type in ("list_splat_pattern", "dictionary_splat_pattern"):
-                        # *args or **kwargs
-                        arg_text = self._get_node_text(p)
-
-                    if arg_text:
-                        args.append(arg_text)
-
             # Extract decorators
             decorators = []
             for child in func_node.children:
@@ -411,7 +380,6 @@ def pre_scan_python(files: list[Path], language_obj: Language, parser_obj: Parse
                     imports_map[name].append(str(path.resolve()))
 
         except Exception as e:
-            # Log but continue scanning other files
-            pass
+            print(f"Warning: skipped {path}: {e}")
 
     return imports_map

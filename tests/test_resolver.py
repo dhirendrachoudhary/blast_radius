@@ -202,7 +202,7 @@ class TestFuzzyMatching:
         # This is more of a logging test; we can't easily capture print output
         # but we can verify fuzzy_match doesn't crash
         resolver = FunctionResolver(indexed_graph)
-        result = resolver._fuzzy_match("/nonexistent/file.py", 99999)
+        result = resolver._find_fuzzy("/nonexistent/file.py", 99999)
         assert result is None  # No function found even in fuzzy
 
     def test_fuzzy_match_returns_function_if_found(self, indexed_graph):
@@ -213,7 +213,7 @@ class TestFuzzyMatching:
 
         # Try to find something that might be fuzzy-matched
         # This depends on actual file content
-        result = resolver._fuzzy_match("/some/path/file.py", 100)
+        result = resolver._find_fuzzy("/some/path/file.py", 100)
         # Result could be None if nothing found, or FunctionNode if found
         assert result is None or isinstance(result, FunctionNode)
 

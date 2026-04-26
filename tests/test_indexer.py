@@ -239,7 +239,7 @@ class TestIndexerDBResolveCall:
         assert len(unresolved) > 0
 
         # Resolve it
-        temp_db.resolve_call(unresolved[0].id, sample_functions[0].uid)
+        temp_db.resolve_calls_batch([(sample_functions[0].uid, unresolved[0].id)])
 
         # Check it's resolved
         cursor = temp_db.conn.cursor()
@@ -289,7 +289,7 @@ class TestIndexerDBStats:
 
         # Resolve one call
         unresolved = temp_db.get_unresolved_calls()
-        temp_db.resolve_call(unresolved[0].id, sample_functions[0].uid)
+        temp_db.resolve_calls_batch([(sample_functions[0].uid, unresolved[0].id)])
 
         stats = temp_db.get_stats()
         assert stats["calls_resolved"] == 1

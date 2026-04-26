@@ -3,11 +3,11 @@
 import sqlite3
 import json
 from pathlib import Path
-from typing import Optional, NamedTuple
+from typing import Optional
 from dataclasses import dataclass
 
-from blast_radius.parser import TreeSitterParser
-from blast_radius.parser.python import FunctionNode, CallEdge
+from .parser import TreeSitterParser
+from .parser.python import FunctionNode, CallEdge
 
 
 # ============================================================================
@@ -197,17 +197,16 @@ class IndexerDB:
         row = cursor.fetchone()
         return row["uid"] if row else None
 
-    def resolve_call(self, call_id: int, callee_uid: str):
-        """
-        Update a call's callee_uid (resolve it).
+    def resolve_calls_batch(self, resolutions: list[tuple[str, int]]):
+        """Batch-update callee_uid for multiple calls in a single transaction.
 
         Args:
-            call_id: ID of the call to resolve
-            callee_uid: UID of the resolved callee function
+            resolutions: list of (callee_uid, call_id) tuples
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE calls SET callee_uid = ? WHERE id = ?", (callee_uid, call_id)
+        if not resolutions:
+            return
+        self.conn.executemany(
+            "UPDATE calls SET callee_uid = ? WHERE id = ?", resolutions
         )
         self.conn.commit()
 
@@ -251,18 +250,9 @@ class IndexerDB:
 class PythonRepoIndexer:
     """Orchestrates two-pass indexing of a Python repository."""
 
-    # Directories to skip during repo walk
     SKIP_DIRS = {
-        ".venv",
-        "venv",
-        "env",
-        "__pycache__",
-        ".git",
-        ".hg",
-        "node_modules",
-        "dist",
-        "build",
-        "*.egg-info",
+        ".venv", "venv", "env", "__pycache__", ".git", ".hg",
+        "node_modules", "dist", "build",
     }
 
     def __init__(self, repo_path: str, db_path: str):
@@ -333,26 +323,25 @@ class PythonRepoIndexer:
         return file_count
 
     def pass_2_resolve_calls(self) -> int:
-        """
-        Resolve callee_name → callee_uid for all unresolved calls.
+        """Resolve callee_name → callee_uid for all unresolved calls.
 
         Returns:
             Number of calls successfully resolved
         """
         unresolved_calls = self.db.get_unresolved_calls()
-        resolved_count = 0
+        resolutions = []
 
         for call in unresolved_calls:
             uid = self.db.find_function_uid_by_name(call.callee_name)
             if uid:
-                self.db.resolve_call(call.id, uid)
-                resolved_count += 1
+                resolutions.append((uid, call.id))
 
-        return resolved_count
+        self.db.resolve_calls_batch(resolutions)
+        return len(resolutions)
 
     def _should_skip(self, file_path: Path) -> bool:
         """Check if a file should be skipped based on its path."""
         for part in file_path.parts:
-            if part in self.SKIP_DIRS:
+            if part in self.SKIP_DIRS or part.endswith(".egg-info"):
                 return True
         return False

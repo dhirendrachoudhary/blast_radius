@@ -5,7 +5,7 @@ import json
 from typing import Optional
 from dataclasses import dataclass
 
-from blast_radius.parser.python import FunctionNode
+from .parser.python import FunctionNode
 
 
 # ============================================================================
@@ -226,18 +226,7 @@ class CodeGraph:
         return [self._row_to_function_node(row) for row in cursor.fetchall()]
 
     def _get_entry_points(self, affected_uids: set[str]) -> list[FunctionNode]:
-        """
-        Filter affected functions: keep only those with no callers above them.
-
-        Entry points are functions in the blast radius that have no callers
-        also in the blast radius.
-
-        Args:
-            affected_uids: Set of affected function UIDs
-
-        Returns:
-            List of FunctionNode objects that are entry points
-        """
+        """Blast-radius members that nobody calls — the top of the call chain."""
         if not affected_uids:
             return []
 
@@ -245,19 +234,18 @@ class CodeGraph:
         affected_list = list(affected_uids)
         placeholders = ",".join(["?" for _ in affected_list])
 
-        # Find affected functions that are NOT callers of other affected functions
+        # Entry points: in blast radius AND never appear as callee_uid anywhere
         cursor.execute(
             f"""
-            SELECT f.uid, f.name, f.file_path, f.line_start, f.line_end, f.source, f.complexity, f.decorators, f.docstring
+            SELECT f.uid, f.name, f.file_path, f.line_start, f.line_end,
+                   f.source, f.complexity, f.decorators, f.docstring
             FROM functions f
             WHERE f.uid IN ({placeholders})
-            AND f.uid NOT IN (
-                SELECT DISTINCT caller_uid
-                FROM calls
-                WHERE callee_uid IS NOT NULL AND callee_uid IN ({placeholders})
-            )
+              AND f.uid NOT IN (
+                  SELECT DISTINCT callee_uid FROM calls WHERE callee_uid IS NOT NULL
+              )
             """,
-            affected_list + affected_list,
+            affected_list,
         )
 
         return [self._row_to_function_node(row) for row in cursor.fetchall()]
